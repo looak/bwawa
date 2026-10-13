@@ -39,7 +39,9 @@ class Hub:
             seen[game.id] = game.version
         for game_id in gone:
             del seen[game_id]
-        if changed or gone:
+        sprt_changed = state.get("sprtVersion") != self.tracker.sprt_version
+        state["sprtVersion"] = self.tracker.sprt_version
+        if changed or gone or sprt_changed:
             await socket.send_str(json.dumps({"type": "games", "games": changed, "gone": gone,
                                               "stats": self.tracker.stats()}))
         watched = self.tracker.games.get(state.get("watch") or -1)

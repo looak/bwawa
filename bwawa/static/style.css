@@ -54,9 +54,26 @@ header.top {
 .wdl-bar .w { background: var(--win); } .wdl-bar .d { background: var(--draw); } .wdl-bar .l { background: var(--loss); }
 .stat { display: flex; flex-direction: column; line-height: 1.15; }
 .stat b { font-family: var(--mono); font-size: 15px; font-weight: 600; white-space: nowrap; }
+.sprt { display: flex; flex-direction: column; gap: 3px; min-width: 240px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
+.sprt:hover { border-color: var(--faint); }
+.sprt-head { display: flex; align-items: baseline; gap: 8px; }
+.sprt-name { color: var(--muted); font-size: 11px; }
+.sprt .llr { font-family: var(--mono); font-size: 14px; }
+.sprt .verdict { font-family: var(--mono); font-weight: 700; text-transform: uppercase; font-size: 11px; }
+.sprt.passed .verdict, .sprt.passed .llr { color: var(--win); }
+.sprt.failed .verdict, .sprt.failed .llr { color: var(--loss); }
+.sprt .stale { color: var(--loss); font-size: 11px; }
+.llr-bar { position: relative; height: 6px; border-radius: 3px; background: var(--line); }
+.llr-bar i { position: absolute; top: 0; bottom: 0; }
+.llr-bar .fill.pos { background: var(--win); } .llr-bar .fill.neg { background: var(--loss); }
+.llr-bar .zero { width: 1px; background: var(--faint); top: -2px; bottom: -2px; }
+.llr-bar .now { width: 3px; margin-left: -1px; background: var(--text); top: -3px; bottom: -3px; border-radius: 1px; }
+.sprt-games { font-size: 11px; font-family: var(--mono); }
+.sprt-games b { color: var(--text); }
+.sprt-games .w { color: var(--win); } .sprt-games .l { color: var(--loss); }
 .counts { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
 .counts b { color: var(--text); }
-.terms { display: flex; gap: 4px; flex-wrap: wrap; max-width: 520px; }
+.terms { display: flex; gap: 4px; flex-wrap: wrap; max-width: 340px; }
 .chip { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 0 7px; font-size: 11px; white-space: nowrap; }
 .waiting { color: var(--muted); }
 .tools { display: flex; gap: 12px; align-items: center; }

@@ -139,6 +139,28 @@ function pairRow(p) {
   </div>`;
 }
 
+// an OpenBench test's SPRT: the LLR between its bounds, the games every worker played
+function sprtBlock(s) {
+  if (s.llr == null) {
+    return `<div class="sprt"><span class="label">SPRT</span> <span class="muted" title="${escapeHtml(s.error ?? "")}">waiting for OpenBench…</span></div>`;
+  }
+  const at = (v) => Math.min(100, Math.max(0, (100 * (v - s.lower)) / (s.upper - s.lower)));
+  const zero = at(0), now = at(s.llr);
+  const fill = `left:${Math.min(zero, now)}%;width:${Math.abs(now - zero)}%`;
+  const elo = s.elo == null ? "" : ` · elo ${s.elo > 0 ? "+" : s.elo < 0 ? "−" : ""}${Math.abs(s.elo).toFixed(2)} ± ${s.margin}`;
+  const branches = s.dev ? `${escapeHtml(s.dev)} vs ${escapeHtml(s.base ?? "?")}` : "";
+  return `<a class="sprt ${s.state}" href="${escapeHtml(s.url)}" target="_blank" rel="noopener"
+      title="${escapeHtml(branches)}, the SPRT on OpenBench, every worker's games${s.penta ? `
+pentanomial [${s.penta.join(", ")}]` : ""}${s.error ? `
+last refresh failed: ${escapeHtml(s.error)}` : ""}">
+    <div class="sprt-head"><span class="sprt-name">SPRT [${s.elo0}, ${s.elo1}]</span>
+      <b class="llr">LLR ${s.llr.toFixed(2)}</b><span class="muted">(${s.lower}, ${s.upper})</span>
+      ${s.state !== "running" ? `<span class="verdict">${s.state}</span>` : ""}${s.error ? `<span class="stale">stale</span>` : ""}</div>
+    <div class="llr-bar"><i class="fill ${s.llr < 0 ? "neg" : "pos"}" style="${fill}"></i><i class="zero" style="left:${zero}%"></i><i class="now" style="left:${now}%"></i></div>
+    <div class="sprt-games muted"><b>${s.games}</b> games · <span class="w">+${s.wins}</span> <span class="d">=${s.draws}</span> <span class="l">−${s.losses}</span>${elo}</div>
+  </a>`;
+}
+
 let statsKey = null;
 function renderStats() {
   const stats = state.stats;
@@ -146,10 +168,10 @@ function renderStats() {
   const done = state.games.size - live;
   const pairs = stats ? perspective(stats.pairs) : [];
   const terms = stats ? Object.entries(stats.terminations).sort((a, b) => b[1] - a[1]) : [];
-  const key = JSON.stringify([pairs, terms, live, done, stats?.engines]);
+  const key = JSON.stringify([pairs, terms, live, done, stats?.engines, stats?.sprt]);
   if (key === statsKey) return;
   statsKey = key;
-  $("#stats").innerHTML = `
+  $("#stats").innerHTML = `${stats?.sprt ? sprtBlock(stats.sprt) : ""}
     <div class="pairs">${pairs.length ? pairs.map(pairRow).join("") : `<div class="waiting">no results yet</div>`}</div>
     <div class="counts">
       <div><b>${live}</b> live · <b>${done}</b> finished</div>
@@ -208,6 +230,9 @@ function renderGrid() {
     if (grid.children[index] !== card.el) grid.insertBefore(card.el, grid.children[index] || null);
   });
   $("#grid-empty").hidden = live.length > 0;
+  $("#grid-empty").textContent = state.stats?.pgnOnly
+    ? "finished games only: following the runner's PGN without its engine log, so nothing is live"
+    : "no live games, waiting for the runner's log";
 }
 
 function tickClocks() {

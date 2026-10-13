@@ -8,15 +8,22 @@ from __future__ import annotations
 
 import itertools
 import math
+import re
 import time as wallclock
 from dataclasses import dataclass, field
 
 import chess
+import chess.pgn
 
 from .events import FROM_ENGINE, TO_ENGINE, EngineIO
 from .uci import Info, parse_bestmove, parse_go, parse_info, parse_position
 
 MATE_SCORE = 100_000
+
+# a move's comment in a fastchess PGN, "+0.04/17 0.434s, n=2200412, sd=0" or "-M30/26 1.116s", the mover's score;
+# a game's last one ends with how it ended, ", Black wins by adjudication"
+PGN_COMMENT = re.compile(r"^(?:(?P<score>[+-]?(?:M\d+|\d+(?:\.\d+)?))/(?P<depth>\d+)\s+)?(?P<secs>\d+(?:\.\d+)?)s"
+                         r"(?:.*?\bn=(?P<nodes>\d+))?(?:.*?\bsd=(?P<seldepth>\d+))?")
 
 
 def white_view(info: Info, white_to_move: bool) -> tuple[int | None, int | None]:
@@ -173,6 +180,14 @@ class Game:
         return data
 
 
+def parse_time_control(text: str) -> tuple[int | None, int]:
+    """A PGN TimeControl, "42.12+0.42" is (42120, 420) in ms; (None, 0) for one without a clock."""
+    found = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\+(\d+(?:\.\d+)?))?", text.strip())
+    if found is None:
+        return None, 0
+    return round(float(found[1]) * 1000), round(float(found[2] or 0) * 1000)
+
+
 def elo(wins: int, draws: int, losses: int) -> dict:
     """Score, Elo difference and its 95% error margin from the first engine's view, from the game results alone
     (trinomial, no game pairs). Elo is None while the score is 0 or 1."""
@@ -204,10 +219,20 @@ class Tracker:
         self.hellos: dict[tuple, dict] = {}     # (engine, pid) -> its telemetry hello
         self.pending_results: list[tuple] = []  # PGN results read before the log showed their game's end
         self.keep_finished = keep_finished
+        self.sprt: dict | None = None           # an OpenBench test's SPRT, when following one
+        self.pgn_only = False                   # games come from a PGN alone, none are ever live
+        self.sprt_version = 0
 
     def reset(self) -> None:
-        """Forget everything, the log started over."""
+        """Forget everything, the log started over. An SPRT followed elsewhere isn't the log's, it stays."""
+        sprt, version, pgn_only = self.sprt, self.sprt_version, self.pgn_only
         self.__init__(self.keep_finished)
+        self.sprt, self.sprt_version, self.pgn_only = sprt, version + 1, pgn_only
+
+    def set_sprt(self, sprt: dict) -> None:
+        if sprt != self.sprt:
+            self.sprt = sprt
+            self.sprt_version += 1
 
     # --- events ---
     def handle(self, event: EngineIO) -> None:
@@ -320,6 +345,56 @@ class Tracker:
         for game in finished[:max(0, len(finished) - self.keep_finished)]:
             del self.games[game.id]
 
+    # --- games from PGN alone ---
+    def import_game(self, pgn: chess.pgn.Game) -> Game | None:
+        """A finished game straight from the runner's PGN, for a runner whose engine log isn't there to follow (an
+        OpenBench worker, say). The engines' evals, depths, times & nodes come from fastchess' move comments, the
+        clocks from the time control and those times."""
+        headers = pgn.headers
+        fen = headers.get("FEN", chess.STARTING_FEN)
+        game = Game(f"r{headers.get('Round', '?')}", fen, wallclock.time())
+        game.white, game.black = headers.get("White"), headers.get("Black")
+        for side, key in ((game.white, "EngineWhiteName"), (game.black, "EngineBlackName")):
+            if side and headers.get(key):
+                self.engine_ids[side] = headers[key]
+        clock = {chess.WHITE: None, chess.BLACK: None}
+        base, inc = parse_time_control(headers.get("TimeControl", ""))
+        if base is not None:
+            clock = {chess.WHITE: base, chess.BLACK: base}
+        for node in pgn.mainline():
+            white = game.board.turn == chess.WHITE
+            record = game.push(node.move.uci(), book=False)
+            if record is None:
+                return None
+            record.clock_ms = clock[white]
+            found = PGN_COMMENT.match(node.comment.strip())
+            if found is None:
+                record.book = "book" in node.comment
+                continue
+            score = found["score"]
+            if score is not None:
+                sign = 1 if white else -1
+                if "M" in score:
+                    record.mate = sign * (-1 if score.startswith("-") else 1) * int(score.lstrip("+-M"))
+                else:
+                    record.cp = sign * round(float(score) * 100)
+            record.depth = int(found["depth"]) if found["depth"] else None
+            record.seldepth = int(found["seldepth"]) if found["seldepth"] and found["seldepth"] != "0" else None
+            record.nodes = int(found["nodes"]) if found["nodes"] else None
+            record.think_ms = round(float(found["secs"]) * 1000)
+            if record.nodes and record.think_ms:
+                record.nps = record.nodes * 1000 // record.think_ms
+            if clock[white] is not None:
+                clock[white] = clock[white] - record.think_ms + inc
+        game.clocks = {"white": clock[chess.WHITE], "black": clock[chess.BLACK]}
+        # the board knows a mate or a draw rule, the header the rest ("adjudication", "time forfeit")
+        game.check_over()
+        if game.status == "live":
+            game.finish(headers.get("Result"), headers.get("Termination"))
+        self.games[game.id] = game
+        self._trim()
+        return game
+
     # --- results from PGN ---
     def apply_result(self, start_fen: str, moves: list[str], result: str, termination: str | None,
                      white: str | None, black: str | None) -> None:
@@ -429,4 +504,5 @@ class Tracker:
             else:
                 wins_draws_losses[2] += 1
         return {"pairs": [{"a": a, "b": b, "w": w, "d": d, "l": l, **elo(w, d, l)} for (a, b), (w, d, l) in pairs.items()],
-                "terminations": terminations, "engines": self.engine_ids}
+                "terminations": terminations, "engines": self.engine_ids, "sprt": self.sprt,
+                "pgnOnly": self.pgn_only}

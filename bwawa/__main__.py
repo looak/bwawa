@@ -1,6 +1,7 @@
 """bwawa, watch engine matches live.
 
     python -m bwawa --fastchess-log games.log [--pgn games.pgn] [--telemetry 9100] [--reference stockfish] [--port 8080]
+    python -m bwawa --pgn games.pgn [--openbench http://server:8000/test/38/]     finished games only, no log
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from aiohttp import web
 from .games import Tracker
 from .reference import Reference
 from .server import create_app
-from .sources import follow_fastchess_log, follow_pgn, listen_telemetry
+from .sources import follow_fastchess_log, follow_openbench, follow_pgn, listen_telemetry
 
 
 def main() -> int:
@@ -21,7 +22,11 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--fastchess-log", metavar="FILE",
                         help="a fastchess log written with -log file=FILE level=info engine=true realtime=true")
-    parser.add_argument("--pgn", metavar="FILE", help="the runner's PGN output, for results & terminations")
+    parser.add_argument("--pgn", metavar="FILE",
+                        help="the runner's PGN output, for results & terminations; on its own, without a log, the "
+                             "finished games come from it")
+    parser.add_argument("--openbench", metavar="URL",
+                        help="an OpenBench test page (http://server:8000/test/38/) to show its SPRT")
     parser.add_argument("--telemetry", metavar="PORT", type=int,
                         help="listen for engine telemetry, JSON lines over UDP on this port")
     parser.add_argument("--reference", metavar="ENGINE",
@@ -35,17 +40,22 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8080, help="web UI port (default 8080)")
     args = parser.parse_args()
 
-    if not args.fastchess_log:
-        parser.error("give a source, --fastchess-log")
+    if not args.fastchess_log and not args.pgn:
+        parser.error("give a source, --fastchess-log or --pgn")
 
     tracker = Tracker()
+    tracker.pgn_only = not args.fastchess_log
     reference = Reference(args.reference, tracker, args.reference_nodes, args.reference_threads) if args.reference else None
     app = create_app(tracker, reference)
 
     async def start_sources(_: web.Application) -> None:
-        tasks = [asyncio.create_task(follow_fastchess_log(args.fastchess_log, tracker))]
+        tasks = []
+        if args.fastchess_log:
+            tasks.append(asyncio.create_task(follow_fastchess_log(args.fastchess_log, tracker)))
         if args.pgn:
-            tasks.append(asyncio.create_task(follow_pgn(args.pgn, tracker)))
+            tasks.append(asyncio.create_task(follow_pgn(args.pgn, tracker, import_games=not args.fastchess_log)))
+        if args.openbench:
+            tasks.append(asyncio.create_task(follow_openbench(args.openbench, tracker)))
         if args.telemetry:
             await listen_telemetry(args.host, args.telemetry, tracker)
         app["sources"] = tasks
