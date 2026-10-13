@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bwawa</title>
+<link rel="stylesheet" href="/static/pieces.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/">bwawa</a>
+  <div id="stats"></div>
+  <div class="tools">
+    <div id="sizes" class="seg" title="card size"><button data-size="s">S</button><button data-size="m">M</button><button data-size="l">L</button></div>
+    <span id="conn" class="conn down">connecting…</span>
+  </div>
+</header>
+
+<main id="set">
+  <section id="grid"></section>
+  <div id="grid-empty" class="empty">no live games, waiting for the runner's log</div>
+  <section id="results">
+    <h2>finished <span id="results-count" class="muted"></span></h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th class="num">#</th><th>white</th><th>result</th><th>black</th><th>termination</th><th class="num">moves</th><th class="num">slot</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="results-empty" class="empty">none yet</div>
+    <button id="results-more" class="link" hidden></button>
+  </section>
+</main>
+
+<main id="game" hidden>
+  <div class="gv-head">
+    <a href="#/" class="back">← all games</a>
+    <h1 id="gv-title"></h1>
+    <span id="gv-status" class="status"></span>
+    <span id="gv-slot" class="muted"></span>
+  </div>
+  <div class="gv-body">
+    <div class="gv-left">
+      <div id="gv-board">
+        <div class="player top"><span class="name"></span><span class="clock"></span></div>
+        <div class="board-row"><div class="evalbar"><i></i></div><div class="board-wrap"></div></div>
+        <div class="player bottom"><span class="name"></span><span class="clock"></span></div>
+      </div>
+      <div class="nav">
+        <button id="gv-first" title="start (Home)">⏮</button><button id="gv-prev" title="back (←)">◀</button>
+        <button id="gv-next" title="forward (→)">▶</button><button id="gv-last" title="last move (End)">⏭</button>
+        <span id="gv-plyinfo" class="plyinfo"></span>
+        <span id="gv-eval" class="nav-eval"></span>
+        <button id="gv-flip" title="flip the board (f)">flip</button>
+        <button id="gv-follow" class="follow"></button>
+      </div>
+      <div id="gv-pvat" class="pv" hidden></div>
+      <div id="gv-graph"></div>
+    </div>
+    <div class="gv-right">
+      <section id="gv-live" class="panel"></section>
+      <section id="gv-telemetry" class="panel" hidden></section>
+      <section class="panel moves-panel">
+        <div id="gv-moves-scroll">
+          <table id="gv-moves">
+            <thead><tr><th></th><th>white</th><th class="num">eval</th><th class="num">depth</th><th class="num">time</th><th class="num">clock</th>
+              <th class="gap"></th><th>black</th><th class="num">eval</th><th class="num">depth</th><th class="num">time</th><th class="num">clock</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
