@@ -167,12 +167,17 @@ td.term { color: var(--muted); }
 .graph .live-line { stroke-width: 1.5; stroke-dasharray: 3 3; }
 .graph .live-dot { fill: var(--panel); stroke: var(--accent); stroke-width: 2; }
 .graph .live-dot.w { stroke: var(--white-engine); } .graph .live-dot.b { stroke: var(--black-engine); }
-.graph .legend { display: flex; gap: 14px; padding: 5px 8px 0 30px; font-size: 11px; color: var(--muted); }
-.graph .legend .key { display: inline-flex; align-items: center; gap: 5px; }
+.graph .legend { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 5px 8px 0 30px; }
+.graph .legend .keys { display: flex; gap: 4px; flex-wrap: wrap; }
+.graph .legend .key { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 1px 8px; color: var(--muted); background: none; }
+.graph .legend .key.on { color: var(--text); background: var(--panel-2); }
+.graph .legend .key:not(.on) { text-decoration: line-through; opacity: .6; }
 .graph .legend i { display: inline-block; width: 14px; height: 2px; border-radius: 1px; }
 .graph .legend .w i { background: var(--white-engine); }
 .graph .legend .b i { background: var(--black-engine); }
 .graph .legend .ref i { background: var(--ref-engine); height: 3px; }
+.graph .panel-name { font-size: 10px; font-family: var(--mono); }
+.graph .panel-name.w { fill: var(--white-engine); } .graph .panel-name.b { fill: var(--black-engine); } .graph .panel-name.ref { fill: var(--ref-engine); }
 .graph .selected { stroke: var(--accent); stroke-width: 1.5; }
 .graph .selected-dot { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
 .graph .hover { stroke: var(--faint); stroke-width: 1; }
