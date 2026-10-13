@@ -1,5 +1,6 @@
-// The eval graph of a game: white's view over the plies, book moves shaded, hover for the move, click to show it.
-import { formatEval } from "./format.js";
+// The eval graph of a game: white's view over the plies, a line per engine (its own eval of the moves it played) and
+// one for the reference engine when there is one, book moves shaded, hover for the move, click to show it.
+import { escapeHtml, formatEval } from "./format.js";
 
 const SVG = "http://www.w3.org/2000/svg";
 
@@ -31,15 +32,19 @@ export class EvalGraph {
     new ResizeObserver(() => this.draw()).observe(this.wrap);
   }
 
-  // moves: the game's move records, selected: ply shown on the board, live: {cp, mate} of the search in progress
-  set(moves, selected, live, label = (ply) => `${Math.ceil(ply / 2)}${ply % 2 ? "." : "…"}`) {
-    this.data = { moves, selected, live, label };
+  // moves: the game's move records, selected: ply shown on the board, live: {cp, mate, white} of the search in
+  // progress, ref: the reference engine's {cp, mate} per ply from 0 (null where not evaluated yet), names: of the
+  // white & black engines and the reference engine
+  set(moves, selected, live, { label = (ply) => `${Math.ceil(ply / 2)}${ply % 2 ? "." : "…"}`, ref = null, names = {} } = {}) {
+    this.data = { moves, selected, live, label, ref, names };
     this.draw();
   }
 
   draw() {
     if (!this.data) return;
-    const { moves, selected, live } = this.data;
+    const { moves, selected, live, ref, names } = this.data;
+    const hasRef = !!ref && ref.some((e) => e && squash(e.cp, e.mate) != null);
+    this.renderLegend(names, hasRef);
     const width = this.wrap.clientWidth || 600;
     const height = 150;
     const left = 30, right = 8, top = 8, bottom = 18;
@@ -87,33 +92,44 @@ export class EvalGraph {
         .textContent = String(Math.ceil(ply / 2));
     }
 
-    // the eval line, cut where a move has no eval
-    const points = moves.map((m, i) => [x(i + 1), squash(m.cp, m.mate)]);
-    const segments = [];
-    let current = [];
-    for (const [px, v] of points) {
-      if (v == null) { if (current.length) segments.push(current); current = []; continue; }
-      current.push([px, y(v)]);
-    }
-    if (current.length) segments.push(current);
-    for (const seg of segments) {
-      const line = seg.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join("");
-      const area = `${line}L${seg[seg.length - 1][0].toFixed(1)},${zero}L${seg[0][0].toFixed(1)},${zero}Z`;
+    // [ply, value] points to a path drawn straight across the plies without a value: the reference engine skips
+    // positions of a live game when the moves come faster than it evaluates them
+    const paths = (points) => {
+      const seg = points.filter(([, v]) => v != null).map(([ply, v]) => [x(ply), y(v)]);
+      if (!seg.length) return [];
+      return [{
+        line: seg.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join(""),
+        first: seg[0][0], last: seg[seg.length - 1][0],
+      }];
+    };
+    // each engine's eval of the moves it played, the book left out
+    const engine = (white) => moves.filter((m) => m.white === white && !m.book).map((m) => [m.ply, squash(m.cp, m.mate)]);
+    const sides = { w: engine(true), b: engine(false) };
+    const refPoints = hasRef ? ref.map((e, ply) => [ply, e ? squash(e.cp, e.mate) : null]) : null;
+
+    // the shaded area follows both engines' evals in move order, the reference engine is a line over it
+    const shade = moves.filter((m) => !m.book).map((m) => [m.ply, squash(m.cp, m.mate)]);
+    for (const seg of paths(shade)) {
+      const area = `${seg.line}L${seg.last.toFixed(1)},${zero}L${seg.first.toFixed(1)},${zero}Z`;
       el("path", { d: area, class: "area-white", "clip-path": "url(#above)" }, svg);
       el("path", { d: area, class: "area-black", "clip-path": "url(#below)" }, svg);
-      el("path", { d: line, class: "eval-line" }, svg);
     }
-    // the search in progress, from the last eval to where it stands now
+    if (refPoints) for (const seg of paths(refPoints)) el("path", { d: seg.line, class: "eval-line ref" }, svg);
+    for (const side of ["w", "b"]) for (const seg of paths(sides[side])) el("path", { d: seg.line, class: `eval-line ${side}` }, svg);
+
+    // the search in progress, from the searching engine's last eval to where it stands now
     const liveValue = live ? squash(live.cp, live.mate) : null;
     if (liveValue != null) {
-      const last = [...points].reverse().find(([, v]) => v != null);
-      if (last) el("line", { x1: last[0], y1: y(last[1]), x2: x(moves.length + 1), y2: y(liveValue), class: "live-line" }, svg);
-      el("circle", { cx: x(moves.length + 1), cy: y(liveValue), r: 4, class: "live-dot" }, svg);
+      const side = live.white ? "w" : "b";
+      const last = [...sides[side]].reverse().find(([, v]) => v != null);
+      if (last) el("line", { x1: x(last[0]), y1: y(last[1]), x2: x(moves.length + 1), y2: y(liveValue), class: `live-line ${side}` }, svg);
+      el("circle", { cx: x(moves.length + 1), cy: y(liveValue), r: 4, class: `live-dot ${side}` }, svg);
     }
-    // the ply on the board
+    // the ply on the board, its dot on the reference eval when there is one, else on the mover's
     if (selected != null && selected > 0) {
       el("line", { x1: x(selected), x2: x(selected), y1: top, y2: height - bottom, class: "selected" }, svg);
-      const v = points[selected - 1]?.[1];
+      const move = moves[selected - 1];
+      const v = refPoints?.[selected]?.[1] ?? (move ? squash(move.cp, move.mate) : null);
       if (v != null) el("circle", { cx: x(selected), cy: y(v), r: 4, class: "selected-dot" }, svg);
     }
     this.hover = el("line", { y1: top, y2: height - bottom, class: "hover", visibility: "hidden" }, svg);
@@ -130,6 +146,19 @@ export class EvalGraph {
     });
     // redrawn under a resting pointer, keep its crosshair
     if (this.pointer) this.onMove(this.pointer, svg);
+  }
+
+  renderLegend(names, hasRef) {
+    let legend = this.wrap.querySelector(".legend");
+    if (!legend) {
+      legend = document.createElement("div");
+      legend.className = "legend";
+      this.wrap.prepend(legend);
+    }
+    const key = (cls, name) => `<span class="key ${cls}"><i></i>${escapeHtml(name)}</span>`;
+    const html = key("w", names.white ?? "white") + key("b", names.black ?? "black")
+      + (hasRef ? key("ref", names.ref ?? "reference") : "");
+    if (legend.innerHTML !== html) legend.innerHTML = html;
   }
 
   plyAt(e, svg) {
@@ -151,7 +180,9 @@ export class EvalGraph {
     this.hover.setAttribute("visibility", "visible");
     const number = this.data.label(ply);
     const detail = move.book ? "book" : `${formatEval(move.cp, move.mate)}${move.depth ? `  d${move.depth}` : ""}`;
-    this.tip.innerHTML = `<b>${number} ${move.san}</b> <span>${detail}</span>`;
+    const refEval = this.data.ref?.[ply];
+    const refText = refEval ? ` · ${escapeHtml(this.data.names.ref ?? "reference")} ${refEval.over ? "game over" : formatEval(refEval.cp, refEval.mate)}` : "";
+    this.tip.innerHTML = `<b>${number} ${escapeHtml(move.san)}</b> <span>${detail}${refText}</span>`;
     this.tip.hidden = false;
     const tipWidth = this.tip.offsetWidth;
     this.tip.style.left = `${Math.min(Math.max(px - tipWidth / 2, 0), this.width - tipWidth)}px`;

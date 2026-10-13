@@ -13,6 +13,9 @@
   --win: #7fbf6a;
   --draw: #8892a0;
   --loss: #d96b5f;
+  --white-engine: #e8ebee;     /* eval graph lines: the engine playing white, black, the reference engine */
+  --black-engine: #6f9be8;
+  --ref-engine: #4fbf9f;
   --card: 200px;
   --mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
 }
@@ -157,9 +160,19 @@ td.term { color: var(--muted); }
 .graph .hatch-line { stroke: rgba(255, 255, 255, .07); stroke-width: 3; }
 .graph .area-white { fill: rgba(232, 235, 238, .20); }
 .graph .area-black { fill: rgba(0, 0, 0, .45); }
-.graph .eval-line { fill: none; stroke: #d9dee4; stroke-width: 1.5; stroke-linejoin: round; }
-.graph .live-line { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.graph .eval-line { fill: none; stroke-width: 1.5; stroke-linejoin: round; }
+.graph .eval-line.w, .graph .live-line.w { stroke: var(--white-engine); }
+.graph .eval-line.b, .graph .live-line.b { stroke: var(--black-engine); }
+.graph .eval-line.ref { stroke: var(--ref-engine); stroke-width: 2; }
+.graph .live-line { stroke-width: 1.5; stroke-dasharray: 3 3; }
 .graph .live-dot { fill: var(--panel); stroke: var(--accent); stroke-width: 2; }
+.graph .live-dot.w { stroke: var(--white-engine); } .graph .live-dot.b { stroke: var(--black-engine); }
+.graph .legend { display: flex; gap: 14px; padding: 5px 8px 0 30px; font-size: 11px; color: var(--muted); }
+.graph .legend .key { display: inline-flex; align-items: center; gap: 5px; }
+.graph .legend i { display: inline-block; width: 14px; height: 2px; border-radius: 1px; }
+.graph .legend .w i { background: var(--white-engine); }
+.graph .legend .b i { background: var(--black-engine); }
+.graph .legend .ref i { background: var(--ref-engine); height: 3px; }
 .graph .selected { stroke: var(--accent); stroke-width: 1.5; }
 .graph .selected-dot { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
 .graph .hover { stroke: var(--faint); stroke-width: 1; }
@@ -205,3 +218,10 @@ dl.kv dd { margin: 0; overflow-wrap: anywhere; }
 #gv-moves td.san.sel { color: var(--accent); }
 #gv-moves td.san { font-weight: 600; min-width: 4.5em; }
 .book { color: var(--faint); font-style: italic; }
+#gv-moves th.ref-col, #gv-moves td.ref-col { color: var(--ref-engine); }
+#gv-moves.no-ref .ref-col { display: none; }
+.analyze { margin-left: auto; align-self: center; }
+.analyze:disabled { cursor: default; color: var(--muted); }
+.ref-live { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.ref-live b { font-family: var(--mono); color: var(--ref-engine); margin-right: 8px; }
+.ref-live .pv { display: inline; }

@@ -390,6 +390,11 @@ function renderGame() {
   $("#gv-board .evalbar").classList.toggle("flipped", flipped);
   $("#gv-eval").textContent = formatEval(barCp, barMate);
 
+  const ref = game.reference;
+  const refEval = ref?.evals[ply];
+  if (refEval) $("#gv-eval").textContent += ` · ${refName(ref)} ${refText(refEval)}`;
+  renderAnalyze(game);
+
   $("#gv-follow").classList.toggle("on", following);
   $("#gv-follow").textContent = game.status === "live" ? (following ? "● following" : "follow game") : "last move";
   $("#gv-plyinfo").textContent = move ? `${plyLabel(game, ply)} ${move.san}` : "start position";
@@ -405,7 +410,37 @@ function renderGame() {
   renderLive(game);
   renderMoves(game, ply);
   renderTelemetry(game);
-  view.graph.set(game.moves, ply, following && game.liveSearch ? game.liveSearch : null, (p) => plyLabel(game, p));
+  const live = following && game.liveSearch ? { ...game.liveSearch, white: game.live?.white } : null;
+  view.graph.set(game.moves, ply, live, {
+    label: (p) => plyLabel(game, p), ref: ref?.evals ?? null,
+    names: { white: game.white, black: game.black, ref: ref ? refName(ref) : null },
+  });
+}
+
+// ---------- the reference engine ----------
+
+// the engine's name without its version, "Stockfish 17.1" is "Stockfish"
+function refName(ref) {
+  return (ref.engine || "reference").split(" ")[0];
+}
+
+function refText(e) {
+  return e.over ? "game over" : formatEval(e.cp, e.mate) + (e.depth ? ` d${e.depth}` : "");
+}
+
+// a finished game is analysed when asked, a live one by itself while it's open
+function renderAnalyze(game) {
+  const button = $("#gv-analyze");
+  const ref = game.reference;
+  button.hidden = !ref || game.status === "live";
+  if (button.hidden) return;
+  const done = ref.evals.filter(Boolean).length, total = ref.evals.length;
+  button.disabled = !!ref.error || ref.analyzing || done === total;
+  button.title = ref.error ? `the reference engine stopped: ${ref.error}` : `${ref.engine ?? ""}, ${formatCount(ref.nodes)} nodes a position`;
+  button.textContent = ref.error ? `${refName(ref)} stopped`
+    : ref.analyzing ? `analyzing ${done}/${total}`
+    : done === total ? `analyzed by ${refName(ref)}`
+    : done ? `analyze the rest with ${refName(ref)}` : `analyze with ${refName(ref)}`;
 }
 
 function renderLive(game) {
@@ -429,13 +464,24 @@ function renderLive(game) {
       ${s.hashfull != null ? `<div><span class="label">hash</span><b>${(s.hashfull / 10).toFixed(1)}%</b></div>` : ""}
       <div><span class="label">time</span><b>${formatMs(s.time) || "–"}</b></div>
     </div>
-    <div class="pv">${pvLine(game, s.pv || [], game.moves.length + 1)}</div>`;
+    <div class="pv">${pvLine(game, s.pv || [], game.moves.length + 1)}</div>${refLive(game)}`;
+}
+
+// the reference engine's eval of the position being searched
+function refLive(game) {
+  const ref = game.reference;
+  const e = ref?.evals[game.moves.length];
+  if (!ref) return "";
+  if (!e) return `<div class="ref-live muted">${escapeHtml(refName(ref))} ${ref.error ? "stopped" : "is looking"}…</div>`;
+  return `<div class="ref-live"><span class="label">${escapeHtml(refName(ref))}</span> <b>${refText(e)}</b>
+    <span class="pv">${pvLine(game, e.pv || [], game.moves.length + 1)}</span></div>`;
 }
 
 function moveCells(m) {
   return [
     `<td class="san">${escapeHtml(m.san)}</td>`,
     `<td class="num ev">${m.book ? `<span class="book">book</span>` : formatEval(m.cp, m.mate)}</td>`,
+    `<td class="num ref-col"></td>`,
     `<td class="num">${m.depth ?? ""}${m.seldepth ? `<small>/${m.seldepth}</small>` : ""}</td>`,
     `<td class="num">${formatMs(m.think_ms)}</td>`,
     `<td class="num muted clock-cell">${m.clock_ms != null ? formatClock(m.clock_ms) : ""}</td>`,
@@ -450,10 +496,11 @@ function renderMoves(game, ply) {
     view.movesKey = game.id;
     view.movesShown = 0;
     view.rows = new Map();   // move number -> tr
+    view.refShown = [];      // ply -> the reference eval text shown
   }
   const scroller = $("#gv-moves-scroll");
   const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 30;
-  const empty = `<td class="san"></td><td></td><td></td><td></td><td></td>`;
+  const empty = `<td class="san"></td><td></td><td class="ref-col"></td><td></td><td></td><td></td>`;
   for (let i = view.movesShown; i < game.moves.length; i++) {
     const m = game.moves[i];
     const { number, white } = plyNumber(game, m.ply);
@@ -465,7 +512,7 @@ function renderMoves(game, ply) {
       view.rows.set(number, tr);
     }
     const cells = [...tr.children];
-    const from = white ? 1 : 7;
+    const from = white ? 1 : 8;
     const holder = document.createElement("tbody");
     holder.innerHTML = `<tr>${moveCells(m)}</tr>`;
     [...holder.firstChild.children].forEach((td, k) => {
@@ -474,6 +521,20 @@ function renderMoves(game, ply) {
     });
   }
   view.movesShown = game.moves.length;
+  // the reference engine's eval of the position after each move, filled in as it gets to them
+  const ref = game.reference;
+  $("#gv-moves").classList.toggle("no-ref", !ref?.evals.some(Boolean));
+  if (ref) {
+    document.querySelectorAll("#gv-moves th.ref-col").forEach((th) => { th.textContent = refName(ref).toLowerCase(); th.title = ref.engine ?? ""; });
+    for (let p = 1; p <= game.moves.length; p++) {
+      const e = ref.evals[p];
+      const text = e ? (e.over ? "–" : formatEval(e.cp, e.mate)) : "";
+      if (view.refShown[p] === text) continue;
+      view.refShown[p] = text;
+      const td = body.querySelector(`td.ref-col[data-ply="${p}"]`);
+      if (td) td.textContent = text;
+    }
+  }
   if (view.selectedPly !== ply || view.selectedGame !== game.id) {
     body.querySelectorAll("td.sel").forEach((td) => td.classList.remove("sel"));
     body.querySelectorAll(`td[data-ply="${ply}"]`).forEach((td) => td.classList.add("sel"));
@@ -614,6 +675,7 @@ function setup() {
   $("#gv-next").onclick = () => selectPly(shownPly(state.detail) + 1);
   $("#gv-last").onclick = () => selectPly(Infinity);
   $("#gv-follow").onclick = () => { state.ply = null; renderGame(); };
+  $("#gv-analyze").onclick = () => { if (state.detail) send({ analyze: state.detail.id }); };
   $("#gv-flip").onclick = () => { view.board.flip(); renderGame(); };
   document.addEventListener("keydown", (e) => {
     if ($("#game").hidden || !state.detail || e.target.matches("input, textarea")) return;

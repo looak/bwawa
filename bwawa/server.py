@@ -7,7 +7,8 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from .games import Tracker
+from .games import Game, Tracker
+from .reference import Reference
 
 STATIC = Path(__file__).parent / "static"
 PUSH_SECONDS = 0.25
@@ -16,8 +17,9 @@ PUSH_SECONDS = 0.25
 class Hub:
     """Pushes changed game summaries to every client, and the full game to clients watching one."""
 
-    def __init__(self, tracker: Tracker):
+    def __init__(self, tracker: Tracker, detail):
         self.tracker = tracker
+        self.detail = detail
         self.clients: dict[web.WebSocketResponse, dict] = {}
 
     async def run(self) -> None:
@@ -43,12 +45,20 @@ class Hub:
         watched = self.tracker.games.get(state.get("watch") or -1)
         if watched is not None and state.get("watchVersion") != watched.version:
             state["watchVersion"] = watched.version
-            await socket.send_str(json.dumps({"type": "game", "game": watched.detail()}))
+            await socket.send_str(json.dumps({"type": "game", "game": self.detail(watched)}))
 
 
-def create_app(tracker: Tracker) -> web.Application:
-    hub = Hub(tracker)
+def create_app(tracker: Tracker, reference: Reference | None = None) -> web.Application:
+    def detail(game: Game) -> dict:
+        data = game.detail()
+        if reference is not None:
+            data["reference"] = reference.view(game)
+        return data
+
+    hub = Hub(tracker, detail)
     app = web.Application()
+    if reference is not None:
+        reference.watching = lambda: {state["watch"] for state in hub.clients.values() if state["watch"] is not None}
 
     async def index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(STATIC / "index.html")
@@ -60,7 +70,7 @@ def create_app(tracker: Tracker) -> web.Application:
         found = tracker.games.get(int(request.match_info["game_id"]))
         if found is None:
             raise web.HTTPNotFound()
-        return web.json_response(found.detail())
+        return web.json_response(detail(found))
 
     async def websocket(request: web.Request) -> web.WebSocketResponse:
         socket = web.WebSocketResponse(heartbeat=20)
@@ -78,12 +88,21 @@ def create_app(tracker: Tracker) -> web.Application:
                 if "watch" in command:
                     state["watch"] = command["watch"]
                     state["watchVersion"] = None
+                if "analyze" in command and reference is not None:
+                    reference.request(command["analyze"])
         finally:
             hub.clients.pop(socket, None)
         return socket
 
     async def start_hub(app: web.Application) -> None:
         app["hub"] = asyncio.create_task(hub.run())
+        if reference is not None:
+            app["reference"] = asyncio.create_task(reference.run())
+
+    async def stop_reference(app: web.Application) -> None:
+        if "reference" in app:
+            app["reference"].cancel()
+            await asyncio.gather(app["reference"], return_exceptions=True)
 
     app.router.add_get("/", index)
     app.router.add_get("/api/games", games)
@@ -91,4 +110,5 @@ def create_app(tracker: Tracker) -> web.Application:
     app.router.add_get("/ws", websocket)
     app.router.add_static("/static", STATIC)
     app.on_startup.append(start_hub)
+    app.on_cleanup.append(stop_reference)
     return app
