@@ -145,7 +145,7 @@ class Game:
 
     def summary(self) -> dict:
         cp, mate = self.last_eval()
-        last = self.moves[-1].uci if self.moves else None
+        last = self.moves[-1] if self.moves else None
         live = None
         if self.live is not None:
             info = self.live.info
@@ -154,7 +154,8 @@ class Game:
                     "nodes": info.nodes if info else None, "nps": info.nps if info else None,
                     "pv": self.live.pv_san[:8]}
         return {"id": self.id, "slot": self.slot, "white": self.white, "black": self.black, "status": self.status,
-                "result": self.result, "termination": self.termination, "fen": self.board.fen(), "lastMove": last,
+                "result": self.result, "termination": self.termination, "fen": self.board.fen(),
+                "lastMove": last.uci if last else None, "lastSan": last.san if last else None,
                 "ply": len(self.moves), "cp": cp, "mate": mate, "clocks": self.clocks, "live": live,
                 "started": self.started, "updated": self.updated}
 
@@ -201,6 +202,7 @@ class Tracker:
         self.pending_new: set[str] = set()
         self.engine_ids: dict[str, str] = {}    # match name -> id name
         self.hellos: dict[tuple, dict] = {}     # (engine, pid) -> its telemetry hello
+        self.pending_results: list[tuple] = []  # PGN results read before the log showed their game's end
         self.keep_finished = keep_finished
 
     def reset(self) -> None:
@@ -222,6 +224,7 @@ class Tracker:
             position = parse_position(text)
             if position is not None:
                 self._sync_position(event, position.fen, position.moves)
+                self._learn_name(event)
         elif text.startswith("go"):
             game = self.slots.get(event.slot)
             if game is None or game.status != "live":
@@ -235,6 +238,19 @@ class Tracker:
             game.clocks = {"white": go.get("wtime"), "black": go.get("btime")}
             clock = go.get("wtime" if white else "btime")
             game.live = LiveSearch(event.engine, white, event.time, clock, go.get("winc" if white else "binc", 0))
+            game.touch()
+
+    def _learn_name(self, event: EngineIO) -> None:
+        """The runner sends both engines of a game their positions, once one side is known the other engine is the
+        opponent, before it's asked to move."""
+        game = self.slots.get(event.slot)
+        if game is None or game.status != "live":
+            return
+        if game.white and not game.black and event.engine != game.white:
+            game.black = event.engine
+            game.touch()
+        elif game.black and not game.white and event.engine != game.black:
+            game.white = event.engine
             game.touch()
 
     def _from_engine(self, event: EngineIO) -> None:
@@ -274,6 +290,7 @@ class Tracker:
                 # the runner's next go says for sure, until then the clock the mover is left with.
                 game.clocks["white" if live.white else "black"] = max(0, live.clock_ms - record.think_ms) + live.inc_ms
             game.check_over()
+            self._settle(game)
 
     def _sync_position(self, event: EngineIO, fen: str, moves: list[str]) -> None:
         game = self.slots.get(event.slot)
@@ -286,6 +303,7 @@ class Tracker:
                 game.status = "abandoned"   # ended in a way the stream doesn't show: adjudication, time, a crash
                 game.live = None
                 game.touch()
+                self._settle(game)
             game = Game(event.slot, fen, event.time)
             self.slots[event.slot] = game
             self.games[game.id] = game
@@ -305,20 +323,42 @@ class Tracker:
     # --- results from PGN ---
     def apply_result(self, start_fen: str, moves: list[str], result: str, termination: str | None,
                      white: str | None, black: str | None) -> None:
-        """A finished game's result from the runner's PGN, matched by its start position & moves."""
-        for game in self.games.values():
-            if game.start_fen.split()[:4] != start_fen.split()[:4]:
-                continue
-            ours = game.uci_moves()
-            if ours != moves and not (game.status != "live" and moves[:len(ours)] == ours):
-                continue
-            if white and black and game.white and game.black and (white, black) != (game.white, game.black):
-                continue
-            # fastchess says "normal" for any decisive end, the board knows whether it was mate or a draw rule.
-            if termination == "normal" and game.termination:
-                termination = None
-            game.finish(result, termination)
-            return
+        """A finished game's result from the runner's PGN, matched by its start position & moves. The PGN can be
+        read before the log's last move of that game, such a result waits until the game catches up."""
+        entry = (start_fen, moves, result, termination, white, black)
+        # games still without a result first, an identical earlier game mustn't take it
+        for game in sorted(self.games.values(), key=lambda g: g.result is not None):
+            if self._matches(game, entry):
+                self._finish_from_pgn(game, entry)
+                return
+        self.pending_results.append(entry)
+        del self.pending_results[:-200]
+
+    @staticmethod
+    def _matches(game: Game, entry: tuple) -> bool:
+        start_fen, moves, _, _, white, black = entry
+        if game.start_fen.split()[:4] != start_fen.split()[:4]:
+            return False
+        ours = game.uci_moves()
+        if ours != moves and not (game.status != "live" and moves[:len(ours)] == ours):
+            return False
+        return not (white and black and game.white and game.black and (white, black) != (game.white, game.black))
+
+    @staticmethod
+    def _finish_from_pgn(game: Game, entry: tuple) -> None:
+        _, _, result, termination, _, _ = entry
+        # fastchess says "normal" for any decisive end, the board knows whether it was mate or a draw rule.
+        if termination == "normal" and game.termination:
+            termination = None
+        game.finish(result, termination)
+
+    def _settle(self, game: Game) -> None:
+        """A game moved on or ended, a waiting PGN result may be its own now."""
+        for entry in self.pending_results:
+            if self._matches(game, entry):
+                self.pending_results.remove(entry)
+                self._finish_from_pgn(game, entry)
+                return
 
     # --- telemetry ---
     def apply_telemetry(self, packet: dict) -> None:
