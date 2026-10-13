@@ -398,6 +398,11 @@ function renderGame() {
   // board & players
   const move = ply > 0 ? game.moves[ply - 1] : null;
   view.board.set(fenAt(game, ply), move?.uci ?? null, /[+#]$/.test(move?.san || ""));
+  const fen = $("#gv-fen");
+  if (fen.value !== fenAt(game, ply)) {
+    fen.value = fenAt(game, ply);
+    $("#gv-fen-copy").textContent = "copy";
+  }
   const flipped = view.board.flipped;
   const top = flipped ? "white" : "black", bottom = flipped ? "black" : "white";
   const toMove = game.fen.split(" ")[1] === "w" ? "white" : "black";
@@ -426,7 +431,7 @@ function renderGame() {
 
   // the PV the mover had for the move on the board
   const pvAt = $("#gv-pvat");
-  if (move && !following) {
+  if (move && !following && (move.book || move.pv?.length)) {
     pvAt.hidden = false;
     pvAt.innerHTML = move.book ? `<span class="muted">book move</span>`
       : `<span class="label">pv for this move${move.depth ? `, d${move.depth}` : ""}</span> ${pvLine(game, move.pv || [], ply)}`;
@@ -440,6 +445,17 @@ function renderGame() {
     label: (p) => plyLabel(game, p), ref: ref?.evals ?? null,
     names: { white: game.white, black: game.black, ref: ref ? refName(ref) : null },
   });
+}
+
+// the FEN of the position on the board to the clipboard; where the page may not write it, selected to copy by hand
+function copyFen() {
+  const input = $("#gv-fen"), button = $("#gv-fen-copy");
+  const done = (ok) => {
+    button.textContent = ok ? "copied" : "select & copy";
+    if (!ok) input.select();
+  };
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(input.value).then(() => done(true), () => done(false));
+  else done(false);
 }
 
 // ---------- the reference engine ----------
@@ -700,6 +716,8 @@ function setup() {
   $("#gv-next").onclick = () => selectPly(shownPly(state.detail) + 1);
   $("#gv-last").onclick = () => selectPly(Infinity);
   $("#gv-follow").onclick = () => { state.ply = null; renderGame(); };
+  $("#gv-fen").onclick = (e) => e.target.select();
+  $("#gv-fen-copy").onclick = copyFen;
   $("#gv-analyze").onclick = () => { if (state.detail) send({ analyze: state.detail.id }); };
   $("#gv-flip").onclick = () => { view.board.flip(); renderGame(); };
   document.addEventListener("keydown", (e) => {
@@ -710,6 +728,7 @@ function setup() {
     else if (e.key === "Home" || e.key === "ArrowUp") selectPly(0);
     else if (e.key === "End" || e.key === "ArrowDown") selectPly(Infinity);
     else if (e.key === "f") { view.board.flip(); renderGame(); }
+    else if (e.key === "c" && !e.ctrlKey && !e.metaKey) copyFen();
     else if (e.key === "Escape") location.hash = "#/";
     else return;
     e.preventDefault();

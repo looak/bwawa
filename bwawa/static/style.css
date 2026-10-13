@@ -166,6 +166,12 @@ td.term { color: var(--muted); }
 .follow.on { color: var(--win); }
 .pv { font-family: var(--mono); font-size: 12px; line-height: 1.6; color: var(--text); word-break: break-word; }
 .pv-move { white-space: nowrap; }
+.fen-row { display: flex; gap: 6px; align-items: center; }
+#gv-fen {
+  flex: 1; min-width: 0; font: 12px var(--mono); color: var(--text); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 4px; padding: 3px 7px; text-overflow: ellipsis;
+}
+#gv-fen:focus { outline: none; border-color: var(--faint); }
 #gv-pvat { background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 5px 8px; }
 
 .graph { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 5px; margin-top: 4px; }
