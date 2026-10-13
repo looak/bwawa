@@ -55,7 +55,7 @@ async def follow_fastchess_log(path: str, tracker: Tracker) -> None:
         if event is not None:
             tracker.handle(event)
 
-    await follow_lines(path, on_line)
+    await follow_lines(path, on_line, on_reset=tracker.reset)
 
 
 async def follow_pgn(path: str, tracker: Tracker) -> None:

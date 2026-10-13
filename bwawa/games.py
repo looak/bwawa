@@ -7,6 +7,7 @@ time, pv), the clocks, the live search of the side to move and, when it's over, 
 from __future__ import annotations
 
 import itertools
+import math
 import time as wallclock
 from dataclasses import dataclass, field
 
@@ -59,6 +60,7 @@ class MoveRecord:
     think_ms: int | None = None     # go to bestmove, measured by the runner's log
     clock_ms: int | None = None     # the mover's clock when it was asked to move
     pv: list[str] = field(default_factory=list)   # SAN, from the position before the move
+    fen: str = ""                   # the position after the move
 
     def to_json(self) -> dict:
         return self.__dict__.copy()
@@ -70,6 +72,7 @@ class LiveSearch:
     white: bool
     started: float
     clock_ms: int | None
+    inc_ms: int = 0
     info: Info | None = None
     pv_san: list[str] = field(default_factory=list)
 
@@ -110,6 +113,7 @@ class Game:
         record = MoveRecord(ply=len(self.moves) + 1, uci=uci, san=self.board.san(move),
                             white=self.board.turn == chess.WHITE, book=book)
         self.board.push(move)
+        record.fen = self.board.fen()
         self.moves.append(record)
         self.touch()
         return record
@@ -145,9 +149,10 @@ class Game:
         live = None
         if self.live is not None:
             info = self.live.info
-            live = {"engine": self.live.engine, "white": self.live.white,
-                    "depth": info.depth if info else None, "nodes": info.nodes if info else None,
-                    "nps": info.nps if info else None, "pv": self.live.pv_san[:8]}
+            live = {"engine": self.live.engine, "white": self.live.white, "clock": self.live.clock_ms,
+                    "depth": info.depth if info else None, "seldepth": info.seldepth if info else None,
+                    "nodes": info.nodes if info else None, "nps": info.nps if info else None,
+                    "pv": self.live.pv_san[:8]}
         return {"id": self.id, "slot": self.slot, "white": self.white, "black": self.black, "status": self.status,
                 "result": self.result, "termination": self.termination, "fen": self.board.fen(), "lastMove": last,
                 "ply": len(self.moves), "cp": cp, "mate": mate, "clocks": self.clocks, "live": live,
@@ -167,6 +172,26 @@ class Game:
         return data
 
 
+def elo(wins: int, draws: int, losses: int) -> dict:
+    """Score, Elo difference and its 95% error margin from the first engine's view, from the game results alone
+    (trinomial, no game pairs). Elo is None while the score is 0 or 1."""
+    games = wins + draws + losses
+    if games == 0:
+        return {"score": None, "elo": None, "error": None}
+    score = (wins + draws / 2) / games
+
+    def to_elo(value: float) -> float | None:
+        if value <= 0 or value >= 1:
+            return None
+        return -400 * math.log10(1 / value - 1)
+
+    variance = (wins * (1 - score) ** 2 + draws * (0.5 - score) ** 2 + losses * score ** 2) / games
+    margin = 1.959964 * math.sqrt(variance / games)
+    low, high = to_elo(score - margin), to_elo(score + margin)
+    error = (high - low) / 2 if low is not None and high is not None else None
+    return {"score": score, "elo": to_elo(score), "error": error}
+
+
 class Tracker:
     """Keeps the current game of every slot and every finished one."""
 
@@ -175,7 +200,12 @@ class Tracker:
         self.games: dict[int, Game] = {}
         self.pending_new: set[str] = set()
         self.engine_ids: dict[str, str] = {}    # match name -> id name
+        self.hellos: dict[tuple, dict] = {}     # (engine, pid) -> its telemetry hello
         self.keep_finished = keep_finished
+
+    def reset(self) -> None:
+        """Forget everything, the log started over."""
+        self.__init__(self.keep_finished)
 
     # --- events ---
     def handle(self, event: EngineIO) -> None:
@@ -204,13 +234,14 @@ class Tracker:
             go = parse_go(text)
             game.clocks = {"white": go.get("wtime"), "black": go.get("btime")}
             clock = go.get("wtime" if white else "btime")
-            game.live = LiveSearch(event.engine, white, event.time, clock)
+            game.live = LiveSearch(event.engine, white, event.time, clock, go.get("winc" if white else "binc", 0))
             game.touch()
 
     def _from_engine(self, event: EngineIO) -> None:
         text = event.text
-        if text.startswith("id name "):
-            self.engine_ids[event.engine] = text[len("id name "):]
+        if "id name " in text and (text.startswith("id name ") or text.lstrip("> ").startswith("id name ")):
+            # some engines put a banner's last characters in front of it
+            self.engine_ids[event.engine] = text.split("id name ", 1)[1].strip()
             return
         game = self.slots.get(event.slot)
         if game is None or game.live is None or game.live.engine != event.engine:
@@ -239,6 +270,9 @@ class Tracker:
                 record.pv = pv_to_san(board_before, info.pv)
             record.think_ms = int((event.time - live.started) * 1000)
             record.clock_ms = live.clock_ms
+            if live.clock_ms is not None:
+                # the runner's next go says for sure, until then the clock the mover is left with.
+                game.clocks["white" if live.white else "black"] = max(0, live.clock_ms - record.think_ms) + live.inc_ms
             game.check_over()
 
     def _sync_position(self, event: EngineIO, fen: str, moves: list[str]) -> None:
@@ -288,17 +322,49 @@ class Tracker:
 
     # --- telemetry ---
     def apply_telemetry(self, packet: dict) -> None:
-        """An engine's own report, matched to the live game whose position it searched."""
+        """An engine's own report, matched to the live game whose position it searched.
+
+        Kept per side of the game: the engine's hello, the latest go and search reports and every thread's latest
+        iteration of the current search. A search report can arrive after the log showed its bestmove, it then
+        matches the position before that move."""
+        kind = packet.get("type")
+        if kind == "hello":
+            self.hellos[(packet.get("engine"), packet.get("pid"))] = packet
+            return
         fen = packet.get("fen") or "startpos"
         if fen == "startpos":
             fen = chess.STARTING_FEN
-        moves = packet.get("moves") or []
+        moves = packet.get("moves")
+        if not isinstance(moves, list):
+            moves = []
         for game in self.slots.values():
-            if game.status == "live" and game.start_fen.split()[:4] == fen.split()[:4] and game.uci_moves() == moves:
-                key = packet.get("engine") or str(packet.get("pid"))
-                game.telemetry[key] = packet
-                game.touch()
-                return
+            if game.status != "live" or game.start_fen.split()[:4] != fen.split()[:4]:
+                continue
+            ours = game.uci_moves()
+            if ours == moves:
+                white = game.board.turn == chess.WHITE
+            elif kind == "search" and ours[:-1] == moves and ours:
+                white = game.board.turn == chess.BLACK    # the move it chose is already on the board
+            else:
+                continue
+            side = game.telemetry.setdefault("white" if white else "black", {})
+            side["engine"], side["pid"] = packet.get("engine"), packet.get("pid")
+            hello = self.hellos.get((packet.get("engine"), packet.get("pid")))
+            if hello is not None:
+                side["hello"] = hello
+            if kind == "iteration":
+                if side.get("searchId") != packet.get("search"):
+                    side["threads"] = {}
+                side["searchId"] = packet.get("search")
+                side.setdefault("threads", {})[str(packet.get("thread", 0))] = packet
+            elif kind == "go":
+                side["go"] = packet
+                side["searchId"] = packet.get("search")
+                side["threads"] = {}
+            else:
+                side[kind if isinstance(kind, str) else "other"] = packet
+            game.touch()
+            return
 
     # --- views ---
     def summaries(self) -> list[dict]:
@@ -322,5 +388,5 @@ class Tracker:
                 wins_draws_losses[0] += 1
             else:
                 wins_draws_losses[2] += 1
-        return {"pairs": [{"a": a, "b": b, "w": w, "d": d, "l": l} for (a, b), (w, d, l) in pairs.items()],
+        return {"pairs": [{"a": a, "b": b, "w": w, "d": d, "l": l, **elo(w, d, l)} for (a, b), (w, d, l) in pairs.items()],
                 "terminations": terminations, "engines": self.engine_ids}
