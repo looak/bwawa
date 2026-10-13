@@ -1,6 +1,7 @@
 // bwawa's web UI: the set view (every live game, match stats, finished games) and the game view (one game in full).
 import { Board } from "./board.js";
 import { EvalGraph } from "./chart.js";
+import { renderSprt } from "./sprtview.js";
 import { escapeHtml, evalShare, formatClock, formatCount, formatEval, formatMs, resultText } from "./format.js";
 
 const state = {
@@ -62,6 +63,7 @@ function onGames(data) {
   for (const id of data.gone) state.games.delete(id);
   state.stats = data.stats;
   renderSet();
+  if (!$("#sprt").hidden) refreshSprt();
   if (state.watch != null && !state.games.has(state.watch) && state.loaded) renderMissing();
   state.loaded = true;
 }
@@ -149,8 +151,8 @@ function sprtBlock(s) {
   const fill = `left:${Math.min(zero, now)}%;width:${Math.abs(now - zero)}%`;
   const elo = s.elo == null ? "" : ` · elo ${s.elo > 0 ? "+" : s.elo < 0 ? "−" : ""}${Math.abs(s.elo).toFixed(2)} ± ${s.margin}`;
   const branches = s.dev ? `${escapeHtml(s.dev)} vs ${escapeHtml(s.base ?? "?")}` : "";
-  return `<a class="sprt ${s.state}" href="${escapeHtml(s.url)}" target="_blank" rel="noopener"
-      title="${escapeHtml(branches)}, the SPRT on OpenBench, every worker's games${s.penta ? `
+  return `<a class="sprt ${s.state}" href="#/sprt"
+      title="${escapeHtml(branches)}, the SPRT on OpenBench, every worker's games, click for its progress & projection${s.penta ? `
 pentanomial [${s.penta.join(", ")}]` : ""}${s.error ? `
 last refresh failed: ${escapeHtml(s.error)}` : ""}">
     <div class="sprt-head"><span class="sprt-name">SPRT [${s.elo0}, ${s.elo1}]</span>
@@ -698,8 +700,32 @@ function renderTelemetry(game) {
 
 function route() {
   const match = location.hash.match(/^#\/game\/(\d+)/);
+  $("#sprt").hidden = true;
   if (match) openGame(Number(match[1]));
+  else if (location.hash === "#/sprt") openSprt();
   else openSet();
+}
+
+// ---------- the SPRT view ----------
+
+function openSprt() {
+  openSet();
+  $("#set").hidden = true;
+  $("#sprt").hidden = false;
+  sprtFetched = 0;
+  refreshSprt();
+}
+
+let sprtFetched = 0, sprtData = null;
+// new games or a new OpenBench reading push stats, at most every few seconds that's a fetch of the full report
+function refreshSprt() {
+  if (Date.now() - sprtFetched < 4000) return;
+  sprtFetched = Date.now();
+  fetch("/api/sprt").then((r) => r.json()).then((report) => {
+    if ($("#sprt").hidden) return;
+    sprtData = report;
+    renderSprt($("#sprt-body"), report);
+  }).catch(() => {});
 }
 
 function setup() {
@@ -764,6 +790,7 @@ function setup() {
   });
 
   window.addEventListener("hashchange", route);
+  window.addEventListener("resize", () => { if (!$("#sprt").hidden && sprtData) renderSprt($("#sprt-body"), sprtData); });
   route();
   connect();
   setInterval(tickClocks, 100);
