@@ -74,6 +74,9 @@ def create_app(tracker: Tracker, reference: Reference | None = None) -> web.Appl
             raise web.HTTPNotFound()
         return web.json_response(detail(found))
 
+    async def sprt(_: web.Request) -> web.Response:
+        return web.json_response(tracker.sprt_report())
+
     async def websocket(request: web.Request) -> web.WebSocketResponse:
         socket = web.WebSocketResponse(heartbeat=20)
         await socket.prepare(request)
@@ -109,6 +112,7 @@ def create_app(tracker: Tracker, reference: Reference | None = None) -> web.Appl
     app.router.add_get("/", index)
     app.router.add_get("/api/games", games)
     app.router.add_get("/api/game/{game_id}", game)
+    app.router.add_get("/api/sprt", sprt)
     app.router.add_get("/ws", websocket)
     app.router.add_static("/static", STATIC)
     app.on_startup.append(start_hub)

@@ -29,6 +29,9 @@ def main() -> int:
                         help="an OpenBench test page (http://server:8000/test/38/) to show its SPRT")
     parser.add_argument("--telemetry", metavar="PORT", type=int,
                         help="listen for engine telemetry, JSON lines over UDP on this port")
+    parser.add_argument("--sprt", metavar="ELO0,ELO1[,ALPHA,BETA]",
+                        help="SPRT bounds for the pairs in the PGN, without an OpenBench test to read them from "
+                             "(alpha & beta 0.05 unless given)")
     parser.add_argument("--reference", metavar="ENGINE",
                         help="a UCI engine (Stockfish, say) to evaluate the live game being watched and the finished "
                              "games asked for")
@@ -45,6 +48,14 @@ def main() -> int:
 
     tracker = Tracker()
     tracker.pgn_only = not args.fastchess_log
+    if args.sprt:
+        try:
+            values = [float(v) for v in args.sprt.split(",")]
+            elo0, elo1 = values[:2]
+            alpha, beta = values[2:4] if len(values) >= 4 else (0.05, 0.05)
+        except ValueError:
+            parser.error("--sprt takes ELO0,ELO1 or ELO0,ELO1,ALPHA,BETA")
+        tracker.sprt_bounds = {"elo0": elo0, "elo1": elo1, "alpha": alpha, "beta": beta}
     reference = Reference(args.reference, tracker, args.reference_nodes, args.reference_threads) if args.reference else None
     app = create_app(tracker, reference)
 

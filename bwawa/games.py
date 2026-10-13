@@ -10,11 +10,13 @@ import itertools
 import math
 import re
 import time as wallclock
+from datetime import datetime
 from dataclasses import dataclass, field
 
 import chess
 import chess.pgn
 
+from . import sprt as sprt_math
 from .events import FROM_ENGINE, TO_ENGINE, EngineIO
 from .uci import Info, parse_bestmove, parse_go, parse_info, parse_position
 
@@ -180,6 +182,24 @@ class Game:
         return data
 
 
+def parse_pgn_time(text: str | None) -> float | None:
+    """A fastchess GameEndTime, "2026-10-13T07:44:06 -0700", as a unix time."""
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%S %z").timestamp()
+    except ValueError:
+        return None
+
+
+def games_per_hour(history: list[dict], window: int = 200) -> float | None:
+    """The pace over the last pairs that finished, in games an hour."""
+    timed = [h for h in history[-window:] if h["time"] is not None]
+    if len(timed) < 2 or timed[-1]["time"] <= timed[0]["time"]:
+        return None
+    return (timed[-1]["games"] - timed[0]["games"]) / (timed[-1]["time"] - timed[0]["time"]) * 3600
+
+
 def parse_time_control(text: str) -> tuple[int | None, int]:
     """A PGN TimeControl, "42.12+0.42" is (42120, 420) in ms; (None, 0) for one without a clock."""
     found = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\+(\d+(?:\.\d+)?))?", text.strip())
@@ -221,13 +241,17 @@ class Tracker:
         self.keep_finished = keep_finished
         self.sprt: dict | None = None           # an OpenBench test's SPRT, when following one
         self.pgn_only = False                   # games come from a PGN alone, none are ever live
+        self.sprt_bounds: dict | None = None    # elo0, elo1, alpha, beta given on the command line
+        self.rounds: dict[str, list[tuple]] = {}   # PGN round -> its games so far, (white, black, result, end time)
+        self.pairs: list[dict] = []                 # finished game pairs in the order they finished
+        self._history: tuple | None = None          # (key, the SPRT after every pair)
         self.sprt_version = 0
 
     def reset(self) -> None:
         """Forget everything, the log started over. An SPRT followed elsewhere isn't the log's, it stays."""
-        sprt, version, pgn_only = self.sprt, self.sprt_version, self.pgn_only
+        sprt, version, pgn_only, bounds = self.sprt, self.sprt_version, self.pgn_only, self.sprt_bounds
         self.__init__(self.keep_finished)
-        self.sprt, self.sprt_version, self.pgn_only = sprt, version + 1, pgn_only
+        self.sprt, self.sprt_version, self.pgn_only, self.sprt_bounds = sprt, version + 1, pgn_only, bounds
 
     def set_sprt(self, sprt: dict) -> None:
         if sprt != self.sprt:
@@ -393,7 +417,67 @@ class Tracker:
             game.finish(headers.get("Result"), headers.get("Termination"))
         self.games[game.id] = game
         self._trim()
+        self._pair(headers.get("Round"), game, headers.get("GameEndTime"))
         return game
+
+    def _pair(self, round_: str | None, game: Game, end_time: str | None) -> None:
+        """A runner playing each opening twice, colours swapped, gives both games the same round: the pair's result
+        is what an SPRT counts."""
+        if not round_ or game.result not in ("1-0", "0-1", "1/2-1/2"):
+            return
+        games = self.rounds.setdefault(round_, [])
+        games.append((game.white, game.black, game.result, parse_pgn_time(end_time)))
+        if len(games) != 2:
+            return
+        del self.rounds[round_]
+        (w1, b1, r1, _), (w2, b2, r2, t2) = games
+        if {w1, b1} != {w2, b2} or w1 == w2:
+            return
+        self.pairs.append({"engines": tuple(sorted((w1, b1))), "games": [(w1, r1), (w2, r2)], "time": t2})
+
+    def sprt_report(self) -> dict | None:
+        """The SPRT over the pairs played here, after every pair, and where it's heading. Bounds come from an
+        OpenBench test being followed, else from the command line; dev is the engine named *-dev (OpenBench's
+        naming), else the first by name."""
+        bounds = self._bounds()
+        if bounds is None or not self.pairs:
+            return None
+        elo0, elo1, lower, upper = bounds
+        engines = self.pairs[-1]["engines"]
+        dev = next((name for name in engines if name.endswith("-dev")), engines[0])
+        key = (len(self.pairs), bounds, dev)
+        if self._history is None or self._history[0][1:] != key[1:] or self._history[0][0] > key[0]:
+            self._history = ((0, bounds, dev), [], [0, 0, 0, 0, 0])
+        _, history, penta = self._history
+        for pair in self.pairs[len(history):]:
+            if dev in pair["engines"]:
+                points = sum({"1-0": 1.0, "0-1": 0.0}.get(result, 0.5) if white == dev
+                             else {"1-0": 0.0, "0-1": 1.0}.get(result, 0.5) for white, result in pair["games"])
+                penta[int(points * 2)] += 1
+            interval = sprt_math.elo(penta)
+            history.append({"games": 2 * sum(penta), "llr": round(sprt_math.llr(penta, elo0, elo1), 4),
+                            "elo": interval and [round(v, 2) for v in interval], "time": pair["time"]})
+        self._history = (key, history, penta)
+
+        # the latest totals: OpenBench's when following a test (every worker's pairs), else the ones here
+        followed = self.sprt if self.sprt and self.sprt.get("penta") else None
+        totals = list(followed["penta"]) if followed else penta   # both [LL, LD, DD, DW, WW] from dev's side
+        now = followed["llr"] if followed else sprt_math.llr(penta, elo0, elo1)
+        return {"dev": dev, "base": next(name for name in engines if name != dev) if len(set(engines)) > 1 else None,
+                "elo0": elo0, "elo1": elo1, "lower": lower, "upper": upper, "llr": now, "penta": totals,
+                "url": self.sprt.get("url") if self.sprt else None,
+                "games": 2 * sum(totals), "elo": sprt_math.elo(totals), "source": "openbench" if followed else "pgn",
+                "projection": sprt_math.project(totals, elo0, elo1, lower, upper),
+                "rate": games_per_hour(history), "history": history,
+                "state": "passed" if now >= upper else "failed" if now <= lower else "running"}
+
+    def _bounds(self) -> tuple[float, float, float, float] | None:
+        if self.sprt and self.sprt.get("elo0") is not None:
+            return self.sprt["elo0"], self.sprt["elo1"], self.sprt["lower"], self.sprt["upper"]
+        if self.sprt_bounds:
+            b = self.sprt_bounds
+            return (b["elo0"], b["elo1"], *sprt_math.bounds(b["alpha"], b["beta"]))
+        return None
 
     # --- results from PGN ---
     def apply_result(self, start_fen: str, moves: list[str], result: str, termination: str | None,
